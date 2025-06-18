@@ -1,0 +1,41 @@
+twitter:
+  rate_limit_window: 900  # 15 minutes in seconds
+  max_requests_per_window: 300
+  monitored_accounts:
+    - id: "123456789"  # Example Twitter user ID
+      name: "trader1"
+    - id: "987654321"
+      name: "trader2"
+
+ai:
+  openai:
+    model: "gpt-4-turbo-preview"
+    temperature: 0.7
+    max_tokens: 1000
+  confidence_threshold: 0.75
+  analysis_prompts:
+    text: "Analyze the following crypto trading content and extract key information about price levels, timeframes, and market sentiment: {content}"
+    image: "Analyze this trading chart and identify support/resistance levels, price targets, and entry points: {content}"
+    video: "Analyze this trading video content and extract key trading signals and market analysis: {content}"
+
+signals:
+  min_confidence: 0.75
+  risk_management:
+    max_daily_signals: 10
+    min_risk_reward_ratio: 2.0
+  validation:
+    price_deviation_threshold: 0.05  # 5%
+    timeframe_validation: true
+
+telegram:
+  message_format:
+    enable_emoji: true
+    include_charts: true
+    include_analysis: true
+  commands:
+    start: "Welcome to the Crypto Trading Signal Bot! 🚀\n\nI monitor Twitter accounts and generate trading signals using AI analysis."
+    help: "Available commands:\n\n/start - Start the bot\n/help - Show this help message\n/signals - Show recent signals\n/stats - Show trading statistics\n/settings - Configure your preferences\n/monitor <username> - Add Twitter account to monitor\n/list - Show monitored Twitter accounts"
+
+database:
+  backup_interval: 86400  # 24 hours in seconds
+  retention_period: 2592000  # 30 days in seconds 
