@@ -28,35 +28,35 @@ class TradingSignalBot:
         with open('config/config.yaml', 'r') as f:
             self.config = yaml.safe_load(f)
         
-        # Initialize database operations
-        database_url = os.getenv('DATABASE_URL')
-        if not database_url:
-            raise ValueError("DATABASE_URL environment variable is not set")
+        # Initialize database operations - use SQLite for Railway if no DATABASE_URL
+        database_url = os.getenv('DATABASE_URL', 'sqlite:///trading_signals.db')
+        if database_url.startswith('postgres://'):
+            # Convert postgres:// to postgresql:// for newer SQLAlchemy
+            database_url = database_url.replace('postgres://', 'postgresql://', 1)
         
+        logger.info(f"Using database: {database_url}")
         self.db_ops = DatabaseOperations(database_url)
         
         # Initialize components
         twitter_token = os.getenv('TWITTER_BEARER_TOKEN')
         if not twitter_token:
-            raise ValueError("TWITTER_BEARER_TOKEN environment variable is not set")
-        
-        self.twitter_monitor = TwitterMonitor(
-            bearer_token=twitter_token
-        )
+            logger.warning("TWITTER_BEARER_TOKEN not set - Twitter monitoring will be disabled")
+            self.twitter_monitor = None
+        else:
+            self.twitter_monitor = TwitterMonitor(bearer_token=twitter_token)
         
         openai_key = os.getenv('OPENAI_API_KEY')
         if not openai_key:
-            raise ValueError("OPENAI_API_KEY environment variable is not set")
-        
-        self.content_analyzer = ContentAnalyzer(
-            api_key=openai_key
-        )
+            logger.warning("OPENAI_API_KEY not set - AI analysis will be disabled")
+            self.content_analyzer = None
+        else:
+            self.content_analyzer = ContentAnalyzer(api_key=openai_key)
         
         self.signal_generator = SignalGenerator()
         
         telegram_token = os.getenv('TELEGRAM_BOT_TOKEN')
         if not telegram_token:
-            raise ValueError("TELEGRAM_BOT_TOKEN environment variable is not set")
+            raise ValueError("TELEGRAM_BOT_TOKEN environment variable is required")
         
         self.telegram_bot = TradingBot(
             token=telegram_token,
@@ -79,7 +79,7 @@ class TradingSignalBot:
     def stop(self):
         """Stop the bot and cleanup resources."""
         try:
-            if hasattr(self, 'twitter_monitor'):
+            if hasattr(self, 'twitter_monitor') and self.twitter_monitor:
                 self.twitter_monitor.stop_polling()
             logger.info("Bot stopped successfully")
         except Exception as e:
@@ -108,50 +108,53 @@ class TradingSignalBot:
                 media_urls=[tweet_data['media']['url']] if tweet_data.get('media') and tweet_data['media'].get('url') else None
             )
             
-            # Analyze content
-            analysis_result = self.content_analyzer.analyze_text(tweet_data['text'])
-            
-            # If media is present, analyze it
-            if tweet_data.get('media'):
-                if tweet_data['media']['type'] == 'photo':
-                    media_analysis = self.content_analyzer.analyze_image(
-                        tweet_data['media']['url']
-                    )
-                    # Merge media analysis with text analysis
-                    analysis_result.update(media_analysis)
-                elif tweet_data['media']['type'] == 'video':
-                    media_analysis = self.content_analyzer.analyze_video(
-                        tweet_data['media']['url']
-                    )
-                    analysis_result.update(media_analysis)
-            
-            # Generate trading signal
-            signal = self.signal_generator.generate_signal(
-                analysis_result,
-                tweet_data['tweet_id']
-            )
-            
-            if signal:
-                # Store signal in database
-                signal_data = {
-                    'symbol': signal.symbol,
-                    'direction': signal.direction,
-                    'entry_price': signal.entry_price,
-                    'stop_loss': signal.stop_loss,
-                    'take_profit': signal.take_profit,
-                    'confidence': signal.confidence,
-                    'timeframe': signal.timeframe,
-                    'reasoning': signal.reasoning
-                }
+            # Analyze content if analyzer is available
+            if self.content_analyzer:
+                analysis_result = self.content_analyzer.analyze_text(tweet_data['text'])
                 
-                stored_signal = self.db_ops.add_trading_signal(signal_data, processed_tweet.id)  # type: ignore
+                # If media is present, analyze it
+                if tweet_data.get('media'):
+                    if tweet_data['media']['type'] == 'photo':
+                        media_analysis = self.content_analyzer.analyze_image(
+                            tweet_data['media']['url']
+                        )
+                        # Merge media analysis with text analysis
+                        analysis_result.update(media_analysis)
+                    elif tweet_data['media']['type'] == 'video':
+                        media_analysis = self.content_analyzer.analyze_video(
+                            tweet_data['media']['url']
+                        )
+                        analysis_result.update(media_analysis)
                 
-                # Send signal to Telegram subscribers
-                await self.telegram_bot.send_trading_signal(signal_data)
+                # Generate trading signal
+                signal = self.signal_generator.generate_signal(
+                    analysis_result,
+                    tweet_data['tweet_id']
+                )
                 
-                logger.info(f"Generated and sent signal for {signal.symbol}")
+                if signal:
+                    # Store signal in database
+                    signal_data = {
+                        'symbol': signal.symbol,
+                        'direction': signal.direction,
+                        'entry_price': signal.entry_price,
+                        'stop_loss': signal.stop_loss,
+                        'take_profit': signal.take_profit,
+                        'confidence': signal.confidence,
+                        'timeframe': signal.timeframe,
+                        'reasoning': signal.reasoning
+                    }
+                    
+                    stored_signal = self.db_ops.add_trading_signal(signal_data, processed_tweet.id)  # type: ignore
+                    
+                    # Send signal to Telegram subscribers
+                    await self.telegram_bot.send_trading_signal(signal_data)
+                    
+                    logger.info(f"Generated and sent signal for {signal.symbol}")
+                else:
+                    logger.info(f"No valid signal generated for tweet {tweet_data['tweet_id']}")
             else:
-                logger.info(f"No valid signal generated for tweet {tweet_data['tweet_id']}")
+                logger.info("Content analyzer not available, skipping signal generation")
             
         except Exception as e:
             logger.error(f"Error processing tweet: {str(e)}")
@@ -169,15 +172,17 @@ class TradingSignalBot:
         try:
             logger.info("Starting Crypto Trading Signal Bot...")
             
-            # Start Twitter monitoring
-            monitored_accounts = [
-                account['id'] for account in self.config['twitter']['monitored_accounts']
-            ]
-            
-            # Start polling for new tweets
-            self.twitter_monitor.start_polling(monitored_accounts, self.tweet_callback)
-            
-            logger.info("Twitter polling started successfully")
+            # Start Twitter monitoring if available
+            if self.twitter_monitor:
+                monitored_accounts = [
+                    account['id'] for account in self.config['twitter']['monitored_accounts']
+                ]
+                
+                # Start polling for new tweets
+                self.twitter_monitor.start_polling(monitored_accounts, self.tweet_callback)
+                logger.info("Twitter polling started successfully")
+            else:
+                logger.info("Twitter monitoring disabled - no bearer token provided")
             
             # Start Telegram bot
             logger.info("Starting Telegram bot...")
